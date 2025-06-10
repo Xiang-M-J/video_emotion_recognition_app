@@ -92,6 +92,44 @@ Uint8List convertYUV420toRGB(CameraImage image) {
   return img;
 }
 
+Float32List convertYUV420toGray(CameraImage image) {
+  final int width = image.width;
+  final int height = image.height;
+
+  final yRowStride = image.planes[0].bytesPerRow;
+  final uvRowStride = image.planes[1].bytesPerRow;
+  final uvPixelStride = image.planes[1].bytesPerPixel!;
+
+  final img = Float32List(width * height); // Gray 格式
+
+  for (int y = 0; y < height; y++) {
+    for (int x = 0; x < width; x++) {
+      final int uvIndex = uvPixelStride * (x ~/ 2) + uvRowStride * (y ~/ 2);
+      final int indexY = y * yRowStride + x;
+
+      final yp = image.planes[0].bytes[indexY];
+      final up = image.planes[1].bytes[uvIndex];
+      final vp = image.planes[2].bytes[uvIndex];
+
+      final yVal = yp.toDouble();
+      final u = up.toDouble() - 128.0;
+      final v = vp.toDouble() - 128.0;
+
+      int r = (yVal + 1.370705 * v).round();
+      int g = (yVal - 0.337633 * u - 0.698001 * v).round();
+      int b = (yVal + 1.732446 * u).round();
+
+      r = r.clamp(0, 255);
+      g = g.clamp(0, 255);
+      b = b.clamp(0, 255);
+
+      final int index = (y * width + x);
+      img[index] = 0.299 * r / 255.0 + 0.587 * g / 255.0 + 0.114 * b / 255.0;
+    }
+  }
+  return img;
+}
+
 Float32List uint2Float(Uint8List u8data){
   int length = u8data.length;
   List<double> ddata = List.filled(length, 0.0);

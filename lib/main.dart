@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:fl_chart/fl_chart.dart';
@@ -14,7 +15,6 @@ void main() {
 
   runApp(const MyApp());
 }
-
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
@@ -105,17 +105,13 @@ class _MyHomePageState extends State<MyHomePage> {
     _initModel();
   }
 
-  void _initModel() async{
+  void _initModel() async {
     await emotionRecognizer?.initModel();
-
   }
 
   void _initializeCamera() async {
     _cameras = await availableCameras();
-    _controller = CameraController(
-      _cameras[0],
-      ResolutionPreset.medium,
-    );
+    _controller = CameraController(_cameras[0], ResolutionPreset.medium);
     // await _controller!.initialize();
     if (mounted) setState(() {});
   }

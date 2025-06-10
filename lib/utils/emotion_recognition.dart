@@ -1,12 +1,11 @@
-import 'dart:ffi';
-import 'dart:math';
+import 'dart:async';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:onnxruntime/onnxruntime.dart';
-import 'package:opencv_dart/opencv.dart' as cv;
-import 'package:opencv_dart/opencv_dart.dart';
+
 import 'package:verapp/utils/emotion_labels.dart';
 import 'package:verapp/utils/type_converter.dart';
 import 'package:verapp/utils/image_converter.dart';
@@ -15,9 +14,11 @@ class EmotionRecognizer {
   OrtSessionOptions? _sessionOptions;
   OrtSession? _session;
 
-  cv.CascadeClassifier? cascadeClassifier;
-
   final int _imageSize = 48;
+
+  FaceDetector? _detector;
+
+  List<List<Float32List>>? detectedFaces;
 
   EmotionRecognizer();
 
@@ -28,14 +29,8 @@ class EmotionRecognizer {
     _sessionOptions = null;
     _session?.release();
     _session = null;
-
-    cascadeClassifier?.dispose();
-    cascadeClassifier = null;
-  }
-
-  initClassifier() {
-    const xmlFileName = "assets/haarcascade_frontalface_default.xml";
-    cascadeClassifier = cv.CascadeClassifier.fromFile(xmlFileName);
+    _detector?.close();
+    _detector = null;
   }
 
   int maxIndex(List<double> values) {
@@ -59,13 +54,22 @@ class EmotionRecognizer {
     final rawAssetFile = await rootBundle.load(assetFileName);
     final bytes = rawAssetFile.buffer.asUint8List();
     _session = OrtSession.fromBuffer(bytes, _sessionOptions!);
-    initClassifier();
+    initDetector();
+  }
+
+  initDetector() {
+    _detector = FaceDetector(
+        options: FaceDetectorOptions(
+      performanceMode: FaceDetectorMode.fast,
+      enableLandmarks: false,
+      enableContours: false,
+    ));
   }
 
   initModelAsync() async {
     const assetFileName = 'assets/models/BiCifParaformer.quant.onnx';
     final rawAssetFile = await rootBundle.load(assetFileName);
-    initClassifier();
+    initDetector();
     return compute(_initModel, rawAssetFile);
   }
 
@@ -84,57 +88,121 @@ class EmotionRecognizer {
     return compute(predict, image);
   }
 
-  List<Float32List> reshapeMat(cv.Mat mat) {
-    Uint8List matData = mat.data;
-    List<Float32List> result = List.empty(growable: true);
-    for (var i = 0; i < _imageSize; i++) {
-      result.add(
-          uint2Float(matData.sublist(i * _imageSize, (i + 1) * _imageSize)));
+  void detectFaces(CameraImage image) async {
+    // faces.clear();
+    final WriteBuffer allBytes = WriteBuffer();
+    for (var plane in image.planes) {
+      allBytes.putUint8List(plane.bytes);
     }
-    return result;
+    int bytesPerRow = image.planes[0].bytesPerRow;
+    InputImageFormat format = InputImageFormat.yuv420;
+    double width = image.width.toDouble();
+    double height = image.height.toDouble();
+
+    final inputImage = InputImage.fromBytes(
+        bytes: allBytes.done().buffer.asUint8List(),
+        metadata: InputImageMetadata(
+            size: Size(width, height),
+            rotation: InputImageRotation.rotation0deg,
+            format: format,
+            bytesPerRow: bytesPerRow));
+
+    final faces = await _detector?.processImage(inputImage);
+
+    if (faces != null && faces.isNotEmpty) {
+      if (detectedFaces != null) {
+        detectedFaces?.clear();
+        detectedFaces = null;
+      }
+      detectedFaces ??= List.empty(growable: true);
+      Float32List data = convertYUV420toGray(image);
+      for (var i = 0; i < faces.length; i++) {
+        detectedFaces?.add(cropFaceFromImage(
+            data, width.toInt(), height.toInt(), faces[i].boundingBox));
+      }
+    }
   }
 
+  List<Float32List> cropFaceFromImage(
+      Float32List image, int srcWidth, int srcHeight, Rect faceRect) {
+    final faceX = faceRect.left.round().clamp(0, srcWidth - 1);
+    final faceY = faceRect.top.round().clamp(0, srcHeight - 1);
+    final faceW = faceRect.width.round().clamp(1, srcWidth - faceX);
+    final faceH = faceRect.height.round().clamp(1, srcHeight - faceY);
+    double scale;
+    int pw = 0;
+    int ph = 0;
+    if (faceW >= faceH) {
+      scale = _imageSize / (faceW * 1.0);
+      ph = ((_imageSize - (faceH * scale).round()) / 2).round();
+      if (ph < 0) {
+        ph = 0;
+      }
+    } else {
+      scale = _imageSize / (faceH * 1.0);
+      pw = ((_imageSize - (faceW * scale).round()) / 2).round();
+      if (pw < 0) {
+        pw = 0;
+      }
+    }
+
+    final faceFlist = List.filled(_imageSize,
+        Float32List.fromList(List<double>.filled(_imageSize, 0.0))); // RGB
+
+    for (int row = 0; row < faceH; row++) {
+      for (int col = 0; col < faceW; col++) {
+        int srcIndex = ((faceY + row) * srcWidth + (faceX + col));
+        int dsth = ph + (scale * row).round();
+        int dstw = pw + (scale * col).round();
+        dsth = dsth.clamp(0, _imageSize - 1);
+        dstw = dstw.clamp(0, _imageSize - 1);
+        faceFlist[dsth][dstw] = image[srcIndex];
+      }
+    }
+
+    return faceFlist;
+  }
+
+  // List<Float32List> reshapeMat(cv.Mat mat) {
+  //   Uint8List matData = mat.data;
+  //   List<Float32List> result = List.empty(growable: true);
+  //   for (var i = 0; i < _imageSize; i++) {
+  //     result.add(
+  //         uint2Float(matData.sublist(i * _imageSize, (i + 1) * _imageSize)));
+  //   }
+  //   return result;
+  // }
+
   int? predict(CameraImage image) {
-    Uint8List rgbData = convertYUV420toRGB(image);
+    detectFaces(image);
+    if (detectedFaces == null) {
+      return null;
+    }
 
-    cv.Mat mat = cv.imdecode(rgbData, cv.IMREAD_GRAYSCALE);
+    for (var i = 0; i < detectedFaces!.length; i++) {
+      final inputOrt = OrtValueTensor.createTensorWithDataList(
+          detectedFaces![i], [1, _imageSize, _imageSize, 1]);
+      final runOptions = OrtRunOptions();
+      final inputs = {'conv2d_1_input': inputOrt};
+      final List<OrtValue?>? outputs;
 
-    cv.VecRect? faceRects = cascadeClassifier?.detectMultiScale(mat,
-        scaleFactor: 1.2, minNeighbors: 3, minSize: (32, 32));
-    if (faceRects == null || faceRects.isEmpty) return null;
+      outputs = _session?.run(runOptions, inputs);
 
-    for (var i = 0; i < faceRects.length; i++) {
-      List<double> rs_sum = List.filled(emoNumClass, 0.0);
-      cv.Mat cutMat = cv.Mat.fromMat(mat, copy: true, roi: faceRects[i]);
-      cutMat = cv.resize(cutMat, (_imageSize, _imageSize));
-      List<Mat> imgs = [];
-      imgs.add(cutMat);
-      for (var img in imgs) {
-        List<Float32List> flist = reshapeMat(img);
-        final inputOrt = OrtValueTensor.createTensorWithDataList(
-            flist, [1, _imageSize, _imageSize, 1]);
-        final runOptions = OrtRunOptions();
-        final inputs = {'conv2d_1_input': inputOrt};
-        final List<OrtValue?>? outputs;
+      if (outputs == null) {
+        return null;
+      }
+      inputOrt.release();
 
-        outputs = _session?.run(runOptions, inputs);
+      runOptions.release();
 
-        if (outputs == null) {
-          return null;
-        }
-        inputOrt.release();
+      /// Output probability & update h,c recursively
+      final logits = (outputs[0]?.value as List<List<List<double>>>)[0];
+      // final toke_num = (outputs[1]?.value as List<double>)[0];
+      // final usAlphas = (outputs[2]?.value as List<List<double>>)[0];
+      // final usCifPeak = (outputs[3]?.value as List<List<double>>)[0];
 
-        runOptions.release();
-
-        /// Output probability & update h,c recursively
-        final logits = (outputs[0]?.value as List<List<List<double>>>)[0];
-        // final toke_num = (outputs[1]?.value as List<double>)[0];
-        // final usAlphas = (outputs[2]?.value as List<List<double>>)[0];
-        // final usCifPeak = (outputs[3]?.value as List<List<double>>)[0];
-
-        for (var element in outputs) {
-          element?.release();
-        }
+      for (var element in outputs) {
+        element?.release();
       }
     }
 
