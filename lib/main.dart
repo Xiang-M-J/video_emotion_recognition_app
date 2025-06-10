@@ -2,14 +2,19 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:fl_chart/fl_chart.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
+import 'package:verapp/utils/emotion_labels.dart';
+import 'package:verapp/utils/emotion_recognition.dart';
+import 'package:verapp/utils/image_converter.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
 
   runApp(const MyApp());
 }
+
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
@@ -42,7 +47,7 @@ Future<void> _showAlertDialog(BuildContext context) async {
     context: context,
     builder: (BuildContext context) {
       return AlertDialog(
-        title: Text('警告'),
+        title: const Text('警告'),
         content: const Text('试用结束'),
         actions: <Widget>[
           TextButton(
@@ -71,17 +76,24 @@ class _MyHomePageState extends State<MyHomePage> {
 
   double _time = 0;
 
+  EmotionRecognizer? emotionRecognizer;
+
   List<CameraDescription> _cameras = [];
+
+  bool isControllerInitialized = false;
 
   final List<CameraImage> _frameBuffer = [];
 
-  void _onNewFrame(CameraImage image) {
+  void _onNewFrame(CameraImage image) async {
     // 限制最多保留 30 帧
     if (_frameBuffer.length >= 30) {
       _frameBuffer.removeAt(0);
     }
+    // List<Uint8List> imageData = getDatafromCameraImage(image);
     _frameBuffer.add(image);
     // print(_frameBuffer.length);
+    int? result = await emotionRecognizer?.predictAsync(image);
+    if (result != null) print(emoLabels[result]);
   }
 
   @override
@@ -89,6 +101,13 @@ class _MyHomePageState extends State<MyHomePage> {
     super.initState();
     _initializeCamera();
     _startSineWave();
+    emotionRecognizer = EmotionRecognizer();
+    _initModel();
+  }
+
+  void _initModel() async{
+    await emotionRecognizer?.initModel();
+
   }
 
   void _initializeCamera() async {
@@ -97,7 +116,7 @@ class _MyHomePageState extends State<MyHomePage> {
       _cameras[0],
       ResolutionPreset.medium,
     );
-    await _controller!.initialize();
+    // await _controller!.initialize();
     if (mounted) setState(() {});
   }
 
@@ -133,6 +152,12 @@ class _MyHomePageState extends State<MyHomePage> {
       }
       return;
     }
+
+    if (!isControllerInitialized) {
+      await _controller!.initialize();
+      isControllerInitialized = true;
+    }
+
     if (_controller != null && !_isRecording) {
       // await _controller!.startVideoRecording();
       await _controller!.startImageStream(_onNewFrame);
@@ -159,6 +184,7 @@ class _MyHomePageState extends State<MyHomePage> {
     _controller?.dispose();
     _timer?.cancel();
     _cTimer?.cancel();
+    emotionRecognizer?.release();
     super.dispose();
   }
 
