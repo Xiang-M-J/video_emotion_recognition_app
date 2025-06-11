@@ -40,6 +40,8 @@ dependencies:
   fluttertoast: ^8.2.6
   google_mlkit_face_detection: ^0.11.0
   permission_handler: ^11.3.1
+  yuv_converter: ^0.0.2
+  image: ^4.5.4
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.6

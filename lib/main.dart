@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
+import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:verapp/utils.dart';
@@ -87,24 +88,39 @@ class _MyHomePageState extends State<MyHomePage> {
 
   final List<CameraImage> _frameBuffer = [];
 
+  CameraDescription? bestCamera;
+
   String nowEmotion = "";
   int count = 0;
-
+  int precount = 60;
   Stopwatch stopwatch = Stopwatch();
 
   void _onNewFrame(CameraImage image) async {
     // 限制最多保留 30 帧
-    if (_frameBuffer.length >= 30) {
+    if (_frameBuffer.length >= 60) {
       _frameBuffer.removeAt(0);
     }
     // List<Uint8List> imageData = getDatafromCameraImage(image);
-    _frameBuffer.add(image);
+
+    if (precount <= 0) {
+      _frameBuffer.add(image);
+    } else {
+      precount -= 1;
+    }
+
     // print(_frameBuffer.length);
-    // just_once(image);
+    if (_frameBuffer.length >= 60) {
+      just_once(image);
+    }
   }
 
-  void predictOneImage(CameraImage image)async{
-    int? result = await emotionRecognizer?.predictAsync(image);
+  void predictOneImage(CameraImage image) async {
+    int? result = emotionRecognizer?.predict(CameraInputImage(
+        image,
+        _controller!.value.deviceOrientation,
+        bestCamera!.lensDirection,
+        bestCamera!.sensorOrientation));
+
     if (result != null) {
       _storeData.add([getNowTime(), emoLabels[result]]);
       print(emoLabels[result]);
@@ -120,7 +136,7 @@ class _MyHomePageState extends State<MyHomePage> {
     }
   }
 
-  void just_once(CameraImage image){
+  void just_once(CameraImage image) {
     if (count >= 1) {
       return;
     }
@@ -135,6 +151,7 @@ class _MyHomePageState extends State<MyHomePage> {
   void initState() {
     super.initState();
     _initializeCamera();
+    checkAndRequestPermission();
     // _startSineWave();
     emotionRecognizer = EmotionRecognizer();
     _initModel();
@@ -151,7 +168,6 @@ class _MyHomePageState extends State<MyHomePage> {
       showToast("未找到摄像头");
       return;
     }
-    CameraDescription? bestCamera;
     for (var i = 0; i < _cameras.length; i++) {
       if (_cameras[i].lensDirection == CameraLensDirection.front) {
         bestCamera = _cameras[i];
@@ -160,12 +176,11 @@ class _MyHomePageState extends State<MyHomePage> {
         bestCamera = _cameras[i];
       }
     }
+
     if (bestCamera != null) {
-      _controller = CameraController(bestCamera, ResolutionPreset.medium);
-    }else{
-      _controller = CameraController(_cameras[0], ResolutionPreset.medium);
+      bestCamera = _cameras[0];
     }
-    
+
     // await _controller!.initialize();
     if (mounted) setState(() {});
   }
@@ -187,7 +202,9 @@ class _MyHomePageState extends State<MyHomePage> {
   void _stopRecording() async {
     if (_controller != null && _isRecording) {
       await _controller!.stopImageStream();
-      await _controller!.pausePreview();
+      _controller?.dispose();
+      _controller = null;
+      // await _controller!.pausePreview();
       setState(() {
         _isRecording = false;
       });
@@ -209,10 +226,15 @@ class _MyHomePageState extends State<MyHomePage> {
       return;
     }
 
-    if (!isControllerInitialized) {
-      await _controller!.initialize();
-      isControllerInitialized = true;
+    ImageFormatGroup format = ImageFormatGroup.nv21;
+    if (Platform.isIOS) {
+      format = ImageFormatGroup.bgra8888;
     }
+
+    _controller = CameraController(bestCamera!, ResolutionPreset.medium,
+        enableAudio: false, fps: 24, imageFormatGroup: format);
+
+    await _controller!.initialize();
 
     if (_controller != null && !_isRecording) {
       // await _controller!.startVideoRecording();
@@ -235,9 +257,29 @@ class _MyHomePageState extends State<MyHomePage> {
     }
   }
 
+  Future<void> checkAndRequestPermission() async {
+    // 检查当前权限状态
+    var status = await Permission.storage.status;
+    if (status.isGranted) {
+      // 权限已经授予
+      print("storage permission granted.");
+    } else if (status.isDenied) {
+      // 请求权限
+      PermissionStatus result = await Permission.storage.request();
+      if (result.isGranted) {
+        print("storage permission granted after request.");
+      } else {
+        print("storage permission denied.");
+      }
+    }
+
+    status = await Permission.manageExternalStorage.request();
+  }
+
   @override
   void dispose() {
     _controller?.dispose();
+    _controller = null;
     _timer?.cancel();
     _cTimer?.cancel();
     emotionRecognizer?.release();
@@ -251,38 +293,26 @@ class _MyHomePageState extends State<MyHomePage> {
     for (var i = 0; i < _storeData.length; i++) {
       content += "${_storeData[i][0]}, ${_storeData[i][1]}\n";
     }
-    final dir = await _getDownloadDirectory();
-    String filepath = '${dir.path}/${getNowTime()}.csv';
+    final dir = await getExternalStorageDirectory();
+    String filepath = '${dir?.parent.path}/${getNowTime()}.csv';
     final file = File(filepath);
+
+    if (file.existsSync()) {
+      await file.delete();
+    }
 
     file.writeAsString(headers + content);
 
     showToast("文件已保存在$filepath");
   }
 
-  Future<Directory> _getDownloadDirectory() async {
-    if (Platform.isAndroid) {
-      // Android: 请求存储权限
-      if (!await _requestStoragePermission()) {
-        throw Exception('Storage permission denied');
-      }
-      return Directory('/storage/emulated/0/Download');
-    } else {
-      // iOS: 使用文档目录
-      return getApplicationDocumentsDirectory();
-    }
-  }
-
-  Future<bool> _requestStoragePermission() async {
-    final status = await Permission.storage.request();
-    return status.isGranted;
-  }
-
   Widget _buildCameraPreview() {
     // if (_controller == null || !_controller!.value.isInitialized) {
     //   return const Center(child: CircularProgressIndicator());
     // }
-    if (!_isRecording || _controller == null || !_controller!.value.isInitialized) {
+    if (!_isRecording ||
+        _controller == null ||
+        !_controller!.value.isInitialized) {
       return Container(
         color: Colors.grey[300],
         child: const Center(
