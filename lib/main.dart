@@ -1,16 +1,20 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math';
-import 'package:fl_chart/fl_chart.dart';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart' as ui;
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:verapp/stream_line_chart.dart';
 import 'package:verapp/utils.dart';
 import 'package:verapp/utils/emotion_labels.dart';
 import 'package:verapp/utils/emotion_recognition.dart';
 import 'line_chart.dart';
+import 'package:image/image.dart' as img;
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -69,12 +73,15 @@ class _MyHomePageState extends State<MyHomePage> {
   bool _isRecording = false;
   bool isPaid = false;
 
+  final StreamController<List<(double, int)>> _plotController = StreamController();
+  final List<(double, int)> _points = [];
+
   // For sine wave animation
-  final List<FlSpot> _points = [];
+  // final List<FlSpot> _points = [];
   Timer? _timer;
   Timer? _cTimer;
   Duration _recordingDuration = Duration.zero;
-  final Duration _maxRecordingDuration = const Duration(seconds: 1 * 60);
+  final Duration _maxRecordingDuration = const Duration(seconds: 5 * 60);
 
   double _time = 0;
 
@@ -88,34 +95,52 @@ class _MyHomePageState extends State<MyHomePage> {
 
   final List<CameraImage> _frameBuffer = [];
 
+  Uint8List face = Uint8List.fromList(List<int>.generate(2304, (i) => 0));
+
   CameraDescription? bestCamera;
 
   String nowEmotion = "";
   int count = 0;
   int precount = 60;
+  int fps = 24;
+  int cnt = 0;
+  int cycle = 6;
+  double timestep = 0.25;
+  int maxPoints = 6 * 4;    // 一秒钟测4次
   Stopwatch stopwatch = Stopwatch();
 
   void _onNewFrame(CameraImage image) async {
     // 限制最多保留 30 帧
-    if (_frameBuffer.length >= 60) {
-      _frameBuffer.removeAt(0);
-    }
+    // if (_frameBuffer.length >= 60) {
+    //   _frameBuffer.removeAt(0);
+    // }
     // List<Uint8List> imageData = getDatafromCameraImage(image);
 
-    if (precount <= 0) {
-      _frameBuffer.add(image);
-    } else {
-      precount -= 1;
-    }
+    // if (precount <= 0) {
+    //   _frameBuffer.add(image);
+    // } else {
+    //   precount -= 1;
+    // }
 
     // print(_frameBuffer.length);
-    if (_frameBuffer.length >= 60) {
-      just_once(image);
+    // if (_frameBuffer.length >= 60) {
+    //   just_once(image);
+    //   // saveFrame(image);
+
+    // }
+
+    if (cnt < cycle) {
+      cnt += 1;
+    }
+    else{
+      MyCameraImage myImage = MyCameraImage.from(image);
+      predictOneImage(myImage);
+      cnt = 0;
     }
   }
 
-  void predictOneImage(CameraImage image) async {
-    int? result = emotionRecognizer?.predict(CameraInputImage(
+  void predictOneImage(MyCameraImage image) async {
+    int? result = await emotionRecognizer?.predict(CameraInputImage(
         image,
         _controller!.value.deviceOrientation,
         bestCamera!.lensDirection,
@@ -126,15 +151,72 @@ class _MyHomePageState extends State<MyHomePage> {
       print(emoLabels[result]);
       setState(() {
         nowEmotion = emoLabels[result];
-        _time += 0.5;
-        _points.add(FlSpot(_time, result.toDouble()));
+        _time += timestep;
+        _points.add((_time, result));
 
-        if (_points.length > 30) {
+        if (_points.length > maxPoints) {
           _points.removeAt(0);
         }
+
+        _plotController.add(List.of(_points));
       });
     }
   }
+
+  void predictFace(MyCameraImage image) async {
+    Uint8List? result = await emotionRecognizer?.getface(CameraInputImage(
+        image,
+        _controller!.value.deviceOrientation,
+        bestCamera!.lensDirection,
+        bestCamera!.sensorOrientation));
+     if (result != null) {
+      setState(() {
+        face = result;
+      });
+     }
+  }
+  
+
+  void predictOneStep() async {
+    final dir = await getExternalStorageDirectory();
+    String filepath = '${dir?.parent.path}/frame.json';
+    final loaded = await MyCameraImage.loadFromFile(filepath);
+    int? result = await emotionRecognizer?.predict(CameraInputImage(
+        loaded,
+        DeviceOrientation.portraitUp,
+        bestCamera!.lensDirection,
+        bestCamera!.sensorOrientation));
+
+
+    // if (result != null) {
+    //   setState(() {
+    //     face = result;
+    //   });
+      
+    // }
+    if (result != null) {
+      _storeData.add([getNowTime(), emoLabels[result]]);
+      print(emoLabels[result]);
+      setState(() {
+        nowEmotion = emoLabels[result];
+        _time += timestep;
+        _points.add((_time, result));
+
+        if (_points.length > maxPoints) {
+          _points.removeAt(0);
+        }
+        _plotController.add(List.of(_points));
+      });
+    }
+  }
+
+  void saveFrame(CameraImage image) async{
+    final dir = await getExternalStorageDirectory();
+    String filepath = '${dir?.parent.path}/frame.json';
+    MyCameraImage myImage = MyCameraImage.from(image);
+    myImage.saveToFile(filepath);
+  }
+
 
   void just_once(CameraImage image) {
     if (count >= 1) {
@@ -142,7 +224,8 @@ class _MyHomePageState extends State<MyHomePage> {
     }
     count += 1;
     stopwatch.start();
-    predictOneImage(image);
+    saveFrame(image);
+    // predictOneImage(image);
     stopwatch.stop();
     print(stopwatch.elapsedMilliseconds / 1000);
   }
@@ -168,6 +251,7 @@ class _MyHomePageState extends State<MyHomePage> {
       showToast("未找到摄像头");
       return;
     }
+    // 优先选择前置摄像头，其次是外置摄像头，最后选择背面的摄像头
     for (var i = 0; i < _cameras.length; i++) {
       if (_cameras[i].lensDirection == CameraLensDirection.front) {
         bestCamera = _cameras[i];
@@ -177,33 +261,20 @@ class _MyHomePageState extends State<MyHomePage> {
       }
     }
 
-    if (bestCamera != null) {
-      bestCamera = _cameras[0];
-    }
+    bestCamera ??= _cameras[0];
 
     // await _controller!.initialize();
     if (mounted) setState(() {});
   }
 
-  // void _startSineWave() {
-  //   _timer = Timer.periodic(const Duration(milliseconds: 100), (_) {
-  //     setState(() {
-  //       _time += 0.1;
-  //       _points.add(FlSpot(_time, sin(_time)));
-
-  //       // 保持最多100个点
-  //       if (_points.length > 100) {
-  //         _points.removeAt(0);
-  //       }
-  //     });
-  //   });
-  // }
 
   void _stopRecording() async {
     if (_controller != null && _isRecording) {
       await _controller!.stopImageStream();
       _controller?.dispose();
       _controller = null;
+      precount = 60;
+      _frameBuffer.clear();
       // await _controller!.pausePreview();
       setState(() {
         _isRecording = false;
@@ -218,6 +289,13 @@ class _MyHomePageState extends State<MyHomePage> {
     return dateTime.toString();
   }
 
+  void reset(){
+    cnt = 0;
+    _points.clear();
+    _plotController.add(List.of(_points));
+
+  }
+
   void _startRecording() async {
     if (!isPaid && _recordingDuration >= _maxRecordingDuration) {
       if (mounted) {
@@ -226,13 +304,15 @@ class _MyHomePageState extends State<MyHomePage> {
       return;
     }
 
+    reset();
+
     ImageFormatGroup format = ImageFormatGroup.nv21;
     if (Platform.isIOS) {
       format = ImageFormatGroup.bgra8888;
     }
 
     _controller = CameraController(bestCamera!, ResolutionPreset.medium,
-        enableAudio: false, fps: 24, imageFormatGroup: format);
+        enableAudio: false, fps: fps, imageFormatGroup: format);
 
     await _controller!.initialize();
 
@@ -287,7 +367,7 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   Future<void> exportFile() async {
-    const headers = "时间,情感\n";
+    const headers = "time,emotion\n";
     String content = "";
 
     for (var i = 0; i < _storeData.length; i++) {
@@ -303,7 +383,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
     file.writeAsString(headers + content);
 
-    showToast("文件已保存在$filepath");
+    showToast("saved in $filepath");
   }
 
   Widget _buildCameraPreview() {
@@ -347,7 +427,7 @@ class _MyHomePageState extends State<MyHomePage> {
   //     ),
   //   );
   // }
-
+  
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -369,16 +449,18 @@ class _MyHomePageState extends State<MyHomePage> {
               SizedBox(
                 height: height * 0.3,
                 child: Padding(
-                  padding: const EdgeInsets.all(8.0),
-                  child: EmotionLineChart(spots: _points),
+                  padding: const EdgeInsets.only(left: 24, top: 0, right: 18, bottom: 0),
+                  child: EmotionLineChartStream(dataStream: _plotController.stream, height: (height*0.3 - 30),),
+                //  child: Image.memory(face)
+
                 ),
               ),
-
+              // SizedBox(height: ,)
               // 按钮区域（30%）
               SizedBox(
                 height: height * 0.2,
                 child: Center(
-                  child: Row(
+                  child: Column(children: [Row(
                     mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                     children: [
                       ElevatedButton(
@@ -395,6 +477,22 @@ class _MyHomePageState extends State<MyHomePage> {
                       ),
                     ],
                   ),
+                  // Row(
+                  //   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  //   children: [
+                  //     //  ElevatedButton(
+                  //     //   onPressed: takePhoto,
+                  //     //   child: const Text('拍照'),
+                  //     // ),
+
+                  //     ElevatedButton(
+                  //       onPressed: predictOneStep,
+                  //       child: const Text('预测'),
+                  //     ),
+                  //   ],
+                  // )
+                  ],)
+                   
                 ),
               ),
             ],

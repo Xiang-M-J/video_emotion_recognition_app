@@ -2,17 +2,18 @@ import 'dart:async';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:onnxruntime/onnxruntime.dart';
 import "package:image/image.dart";
+import "package:image/image.dart" as img;
+import 'package:verapp/utils.dart';
 
-import 'package:verapp/utils/emotion_labels.dart';
-import 'package:verapp/utils/type_converter.dart';
 import 'package:verapp/utils/image_converter.dart';
 
 class CameraInputImage {
-  CameraImage image;
+  MyCameraImage image;
   DeviceOrientation deviceOrientation = DeviceOrientation.landscapeLeft;
   CameraLensDirection lensDirection = CameraLensDirection.front;
   int sensorOrientation = 0;
@@ -25,11 +26,9 @@ class EmotionRecognizer {
   OrtSessionOptions? _sessionOptions;
   OrtSession? _session;
 
-  final int _imageSize = 48;
+  final int _imgSize = 48;
 
   FaceDetector? _detector;
-
-  List<List<Float32List>>? detectedFaces;
 
   EmotionRecognizer();
 
@@ -78,7 +77,7 @@ class EmotionRecognizer {
   }
 
   initModelAsync() async {
-    const assetFileName = 'assets/models/BiCifParaformer.quant.onnx';
+    const assetFileName = 'assets/model.onnx';
     final rawAssetFile = await rootBundle.load(assetFileName);
     initDetector();
     return compute(_initModel, rawAssetFile);
@@ -99,86 +98,112 @@ class EmotionRecognizer {
     return compute(predict, cameraInputImage);
   }
 
-  void detectFaces(CameraInputImage cameraInputImage) async {
-    // faces.clear();
-    if (detectedFaces != null) {
-      detectedFaces?.clear();
-      detectedFaces = null;
-    }
+  Future<List<List<Float32List>>?> detectFaces(CameraInputImage cameraInputImage) async {
+    // faces.clear()
 
-    CameraImage image = cameraInputImage.image;
+    MyCameraImage image = cameraInputImage.image;
     DeviceOrientation deviceOrientation = cameraInputImage.deviceOrientation;
     CameraLensDirection lensDirection = cameraInputImage.lensDirection;
     int sensorOrientation = cameraInputImage.sensorOrientation;
 
-    // final WriteBuffer allBytes = WriteBuffer();
-    // for (var plane in image.planes) {
-    //   allBytes.putUint8List(plane.bytes);
-    // }
-    // int bytesPerRow = image.planes[0].bytesPerRow;
-    // InputImageFormat format = InputImageFormat.yuv420;
-    double width = image.width.toDouble();
-    double height = image.height.toDouble();
-
-    // final inputImage = InputImage.fromBytes(
-    //     bytes: allBytes.done().buffer.asUint8List(),
-    //     metadata: InputImageMetadata(
-    //         size: Size(width, height),
-    //         rotation: InputImageRotation.rotation0deg,
-    //         format: format,
-    //         bytesPerRow: bytesPerRow));
     InputImage? inputImage = getInputImageFromCameraImage(
         image, deviceOrientation, lensDirection, sensorOrientation);
-    if (inputImage == null) return;
+    if (inputImage == null) return null;
 
     final faces = await _detector?.processImage(inputImage);
     if (faces != null && faces.isNotEmpty) {
-      detectedFaces ??= List.empty(growable: true);
-      Float32List data = convertYUVNV21toGray(image);
+      List<List<Float32List>> detectedFaces = List.empty(growable: true);
+      Uint8List rgbImg = convertYUVNV21toRGB(image);
       for (var i = 0; i < faces.length; i++) {
-        detectedFaces?.add(cropFaceFromImage(
-            data, width.toInt(), height.toInt(), faces[i].boundingBox));
+        detectedFaces.add(cropandresizeFace(
+            rgbImg, image.width, image.height, faces[i].boundingBox));
       }
+      return detectedFaces;
     }
+    return null;
   }
 
   List<Float32List> cropandresizeFace(
-      Float32List image, int srcWidth, int srcHeight, Rect faceRect) {
-    final faceX = faceRect.left.round().clamp(0, srcWidth - 1);
-    final faceY = faceRect.top.round().clamp(0, srcHeight - 1);
-    final faceW = faceRect.width.round().clamp(1, srcWidth - faceX);
-    final faceH = faceRect.height.round().clamp(1, srcHeight - faceY);
+      Uint8List imageData, int srcWidth, int srcHeight, Rect faceRect) {
+    final faceX = faceRect.left.toInt();
+    final faceY = faceRect.top.toInt();
+    final faceW = faceRect.width.toInt();
+    final faceH = faceRect.height.toInt();
 
-    final faceFlist = Float32List(faceW * faceH);
+    final image = img.Image.fromBytes(width: srcWidth, height: srcHeight, bytes: imageData.buffer);
+    final rotateImage = img.copyRotate(image, angle:  270);
+    final cropImage = img.copyCrop(rotateImage, x: faceX, y: faceY, width: faceW, height: faceH);
+    final resizeImage = copyResize(cropImage, width: _imgSize, height: _imgSize);
 
-    for (int row = 0; row < faceH; row++) {
-      for (int col = 0; col < faceW; col++) {
-        int srcIndex = ((faceY + row) * srcWidth + (faceX + col));
-        int dstIndex = (row * faceW + col);
+    final src = Uint8List.view(resizeImage.buffer);
+    final gray = grayscale2(src, _imgSize, _imgSize);
 
-        faceFlist[dstIndex] = image[srcIndex];
-      }
-    }
+    final reshapedFace = reshapeImage(gray, _imgSize, _imgSize);
 
-    // Image iimage = decodeImage(data);
-
-    return [faceFlist];
+    return reshapedFace;
   }
 
-  Uint8List resizeImage(
-      Uint8List inputBytes, int targetWidth, int targetHeight) {
-    // 解码图像
-    final image = decodeImage(inputBytes);
-    if (image == null) {
-      throw Exception('Failed to decode image');
+  Uint8List cropandresizeFace2(
+      Uint8List image, int srcWidth, int srcHeight, Rect faceRect) {
+    final faceX = faceRect.left.toInt();
+    final faceY = faceRect.top.toInt();
+    final faceW = faceRect.width.toInt();
+    final faceH = faceRect.height.toInt();
+
+    final image2 = img.Image.fromBytes(width: srcWidth, height: srcHeight, bytes: image.buffer);
+    final image3 = img.copyRotate(image2, angle:  270);
+    final image4 = img.copyCrop(image3, x: faceX, y: faceY, width: faceW, height: faceH);
+
+// 缩放图像
+    final resized = copyResize(image4, width: _imgSize, height: _imgSize);
+    final grayImg = grayscale(resized);
+
+    final pngBytes = Uint8List.fromList(img.encodePng(grayImg));
+
+    return pngBytes;
+  }
+
+  List<Float32List> reshapeImage(Float32List src, int width, int height) {
+    List<Float32List> result = List.empty(growable: true);
+    for (var i = 0; i < height; i++) {
+      result.add((src.sublist(i * width, (i + 1) * width)));
     }
+    return result;
+  }
+
+  Float32List resizeImage(Uint8List inputBytes, int srcWidth, int srcHeight,
+      int targetWidth, int targetHeight) {
+    // 解码图像
+    final image = img.Image.fromBytes(
+        width: srcWidth,
+        height: srcHeight,
+        bytes: inputBytes.buffer,
+        numChannels: 3);
 
     // 缩放图像
     final resized = copyResize(image, width: targetWidth, height: targetHeight);
+// img.getLuminance(img.Color.r)
+    final grayImg = grayscale(resized);
+    final src = Uint8List.view(resized.buffer);
+    final gray = grayscale2(src, targetWidth, targetHeight);
+    return gray;
+  }
 
-    // 编码为 PNG/JPEG
-    final resizedBytes = encodePng(resized);
-    return Uint8List.fromList(resizedBytes);
+  Float32List grayscale2(Uint8List src, int width, int height){
+     final gray = Float32List(width * height);
+
+    for (int row = 0; row < height; row++) {
+      for (int col = 0; col < width; col++) {
+        int srcIndex = (row * width + col) * 3;
+        int dstIndex = (row * width + col);
+        int r = src[srcIndex];
+        int g = src[srcIndex+1];
+        int b = src[srcIndex+2];
+        gray[dstIndex] = 0.299 * r / 255.0 + 0.587 * g / 255.0 + 0.114 * b / 255.0;
+      }
+    }
+
+    return gray;
   }
 
   List<Float32List> cropFaceFromImage(
@@ -191,29 +216,29 @@ class EmotionRecognizer {
     int pw = 0;
     int ph = 0;
     if (faceW >= faceH) {
-      scale = _imageSize / (faceW * 1.0);
-      ph = ((_imageSize - (faceH * scale).round()) / 2).round();
+      scale = _imgSize / (faceW * 1.0);
+      ph = ((_imgSize - (faceH * scale).round()) / 2).round();
       if (ph < 0) {
         ph = 0;
       }
     } else {
-      scale = _imageSize / (faceH * 1.0);
-      pw = ((_imageSize - (faceW * scale).round()) / 2).round();
+      scale = _imgSize / (faceH * 1.0);
+      pw = ((_imgSize - (faceW * scale).round()) / 2).round();
       if (pw < 0) {
         pw = 0;
       }
     }
 
-    final faceFlist = List.filled(_imageSize,
-        Float32List.fromList(List<double>.filled(_imageSize, 0.0))); // RGB
+    final faceFlist = List.filled(_imgSize,
+        Float32List.fromList(List<double>.filled(_imgSize, 0.0))); // RGB
 
     for (int row = 0; row < faceH; row++) {
       for (int col = 0; col < faceW; col++) {
         int srcIndex = ((faceY + row) * srcWidth + (faceX + col));
         int dsth = ph + (scale * row).round();
         int dstw = pw + (scale * col).round();
-        dsth = dsth.clamp(0, _imageSize - 1);
-        dstw = dstw.clamp(0, _imageSize - 1);
+        dsth = dsth.clamp(0, _imgSize - 1);
+        dstw = dstw.clamp(0, _imgSize - 1);
         faceFlist[dsth][dstw] = image[srcIndex];
       }
     }
@@ -231,15 +256,35 @@ class EmotionRecognizer {
   //   return result;
   // }
 
-  int? predict(CameraInputImage image) {
-    detectFaces(image);
+  Future<Uint8List?> getface(CameraInputImage cameraInputImage) async{
+    MyCameraImage image = cameraInputImage.image;
+    DeviceOrientation deviceOrientation = cameraInputImage.deviceOrientation;
+    CameraLensDirection lensDirection = cameraInputImage.lensDirection;
+    int sensorOrientation = cameraInputImage.sensorOrientation;
+
+    InputImage? inputImage = getInputImageFromCameraImage(
+        image, deviceOrientation, lensDirection, sensorOrientation);
+    if (inputImage == null) return null;
+
+    final faces = await _detector?.processImage(inputImage);
+    if (faces != null && faces.isNotEmpty) {
+      Uint8List rgbImg = convertYUVNV21toRGB(image);
+      
+      return cropandresizeFace2(
+            rgbImg, image.width, image.height, faces[0].boundingBox);
+    }
+    return null;
+  }
+
+  Future<int?> predict(CameraInputImage image) async {
+    List<List<Float32List>>? detectedFaces = await detectFaces(image);
     if (detectedFaces == null) {
       return null;
     }
-
-    for (var i = 0; i < detectedFaces!.length; i++) {
+    int index = 0;
+    for (var i = 0; i < detectedFaces.length; i++) {
       final inputOrt = OrtValueTensor.createTensorWithDataList(
-          detectedFaces![i], [1, _imageSize, _imageSize, 1]);
+          detectedFaces[i], [1, _imgSize, _imgSize, 1]);
       final runOptions = OrtRunOptions();
       final inputs = {'conv2d_1_input': inputOrt};
       final List<OrtValue?>? outputs;
@@ -254,17 +299,18 @@ class EmotionRecognizer {
       runOptions.release();
 
       /// Output probability & update h,c recursively
-      final logits = (outputs[0]?.value as List<List<List<double>>>)[0];
+      final logits = (outputs[0]?.value as List<List<double>>)[0];
       // final toke_num = (outputs[1]?.value as List<double>)[0];
       // final usAlphas = (outputs[2]?.value as List<List<double>>)[0];
       // final usCifPeak = (outputs[3]?.value as List<List<double>>)[0];
-
+      index = maxIndex(logits);
       for (var element in outputs) {
         element?.release();
       }
+      break;
     }
 
-    return 0;
+    return index;
   }
 
   List<List<double>> extractFbank(List<int> intData) {

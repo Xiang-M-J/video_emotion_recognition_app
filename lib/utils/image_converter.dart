@@ -4,6 +4,8 @@ import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
+import 'package:image/image.dart';
+import 'package:verapp/utils.dart';
 import 'package:yuv_converter/yuv_converter.dart';
 // import "package:opencv_dart/opencv.dart" as cv;
 
@@ -147,6 +149,52 @@ Float32List convertYUVNV21toGray(CameraImage image) {
   return gray;
 }
 
+
+Uint8List convertYUVNV21toRGB(MyCameraImage image) {
+
+  int width = image.width;
+  int height = image.height;
+  Uint8List src = image.planes[0].bytes;
+
+  final rgb = Uint8List(width * height * 3);
+  final nvStart = width * height;
+  int index = 0, rgbaIndex = 0;
+  int y, u, v;
+  int r, g, b;
+  int nvIndex = 0;
+
+  for (int i = 0; i < height; i++) {
+    for (int j = 0; j < width; j++) {
+      nvIndex = (i ~/ 2 * width + j - j % 2).toInt();
+
+      y = src[rgbaIndex];
+      u = src[nvStart + nvIndex];
+      v = src[nvStart + nvIndex + 1];
+
+      // r = y + (140 * (v - 128)) ~/ 100; // r
+      // g = y - (34 * (u - 128)) ~/ 100 - (71 * (v - 128)) ~/ 100; // g
+      // b = y + (177 * (u - 128)) ~/ 100; // b
+      // a = 255; // 设置透明度为255（不透明）
+      r = y + (1.13983 * (v - 128)).toInt(); // r
+      g = y - (0.39465 * (u - 128)).toInt() - (0.58060 * (v - 128)).toInt(); // g
+      b = y + (2.03211 * (u - 128)).toInt(); // b
+
+      r = r.clamp(0, 255);
+      g = g.clamp(0, 255);
+      b = b.clamp(0, 255);
+
+      // index = rgbaIndex % width + (height - i - 1) * width;
+      index = rgbaIndex % width + i * width;
+      rgb[index * 3 + 0] = b;
+      rgb[index * 3 + 1] = g;
+      rgb[index * 3 + 2] = r;
+      rgbaIndex++;
+    }
+  }
+
+  return rgb;
+}
+
 Float32List convertYUV420toGray(CameraImage image) {
   final int width = image.width;
   final int height = image.height;
@@ -195,7 +243,7 @@ Float32List uint2Float(Uint8List u8data) {
 }
 
 InputImage? getInputImageFromCameraImage(
-    CameraImage image,
+    MyCameraImage image,
     DeviceOrientation deviceOrientation,
     CameraLensDirection lensDirection,
     int sensorOrientation) {
@@ -226,7 +274,7 @@ InputImage? getInputImageFromCameraImage(
   // print('final rotation: $rotation');
 
   // get image format
-  final format = InputImageFormatValue.fromRawValue(image.format.raw);
+  final format = InputImageFormatValue.fromRawValue(image.format);
   // validate format depending on platform
   // only supported formats:
   // * nv21 for Android

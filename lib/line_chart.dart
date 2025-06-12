@@ -73,15 +73,15 @@ class _EmotionLineChartState extends State<EmotionLineChart> {
         child: LayoutBuilder(builder: (context, constraints) {
           return LineChart(
             LineChartData(
-              showingTooltipIndicators: showingTooltipOnSpots.map((index) {
-                return ShowingTooltipIndicators([
-                  LineBarSpot(
-                    tooltipsOnBar,
-                    lineBarsData.indexOf(tooltipsOnBar),
-                    tooltipsOnBar.spots[index],
-                  ),
-                ]);
-              }).toList(),
+              // showingTooltipIndicators: showingTooltipOnSpots.map((index) {
+              //   return ShowingTooltipIndicators([
+              //     LineBarSpot(
+              //       tooltipsOnBar,
+              //       lineBarsData.indexOf(tooltipsOnBar),
+              //       tooltipsOnBar.spots[index],
+              //     ),
+              //   ]);
+              // }).toList(),
               lineTouchData: LineTouchData(
                 enabled: true,
                 handleBuiltInTouches: false,
