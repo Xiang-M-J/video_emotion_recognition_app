@@ -66,7 +66,7 @@ Future<void> _showAlertDialog(BuildContext context) async {
 class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
   CameraController? _controller;
   bool _isRecording = false;
-  bool isPaid = false;
+  bool isPaid = true;
 
   Timer? _recordTimer;
   Duration _recordingDuration = Duration.zero;
